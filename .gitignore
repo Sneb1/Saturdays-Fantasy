@@ -1,0 +1,9 @@
+# local backups and editor cruft
+*.bak
+.DS_Store
+.vscode/
+.idea/
+
+# nothing in here should ever be committed
+.env
+*secret*
