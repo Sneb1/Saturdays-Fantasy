@@ -39,9 +39,10 @@ put that in this file.
 2. **Authentication** → **URL Configuration** → add your site URL to **Redirect URLs**.
    Add both while you're testing:
    - `http://localhost:8000`
-   - `https://YOURNAME.github.io/saturdays-fantasy/`
+   - your live site's address
 
-   Sign-in links only work for URLs listed here.
+   Sign-in links only work for URLs listed here. For this site those are
+   `https://saturdaysfantasy.com/` and `http://localhost:8000`.
 
 ### 4. Try it on your own machine first
 
@@ -59,12 +60,19 @@ should land back on the page signed in. Create a league. You'll get a join code.
 ### 5. Put it online (~5 min)
 
 1. Create a GitHub account if you don't have one.
-2. New repository, named `saturdays-fantasy`, **Public**.
+2. New repository, **Public**. This one is `Sneb1/Saturdays-Fantasy`.
 3. Upload `index.html`, `config.js` and `schema.sql` (the web uploader is fine — drag them in).
 4. Repo → **Settings** → **Pages** → Source: **Deploy from a branch**, branch `main`, folder
    `/ (root)`. Save.
-5. Wait a minute. Your site is at `https://YOURNAME.github.io/saturdays-fantasy/`.
-6. Add that exact URL to Supabase's **Redirect URLs** (step 3) if you haven't.
+5. Wait a minute. Your site is at `https://YOURNAME.github.io/REPO/`.
+6. Add that exact URL to Supabase's **Redirect URLs** (step 3).
+
+**This site lives at https://saturdaysfantasy.com** - a custom domain on top of Pages. That
+needs a `CNAME` file in the repo (GitHub writes it when you set the custom domain in Pages
+settings) plus DNS: four `A` records on `@` pointing at GitHub's Pages servers
+(185.199.108-111.153) and a `CNAME` for `www` to `sneb1.github.io`. On Cloudflare every one of
+those must be **DNS only**, not proxied - the orange cloud stops GitHub issuing the HTTPS
+certificate.
 
 Send the link and the join code to a friend. When they join, your page updates on its own —
 that's the live connection working.
