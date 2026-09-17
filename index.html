@@ -510,6 +510,25 @@
     max-width:720px; margin:0 auto 16px; padding:18px 18px 20px;
   }
   .lobby-slot{ font-family:var(--mono); font-size:11px; color:var(--ink-2); width:26px; }
+  input[type=password]{
+    width:100%; background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+    padding:9px 11px; margin-bottom:6px; font-size:15px;
+  }
+  .authtabs{ display:flex; gap:0; margin:-4px 0 18px; border-bottom:1px solid var(--line); }
+  .authtab{
+    background:none; border:none; border-bottom:2px solid transparent; cursor:pointer;
+    padding:8px 2px; margin-right:22px; font-family:var(--display); font-size:14px;
+    letter-spacing:.06em; text-transform:uppercase; color:var(--ink-2);
+  }
+  .authtab.on{ color:var(--ink); border-bottom-color:var(--accent); }
+  .authtab:hover{ color:var(--ink); }
+  .fieldnote{ font-size:11.5px; color:var(--ink-2); margin:-8px 0 13px; line-height:1.35; }
+  .fieldnote.bad{ color:var(--over); }
+  .fieldnote.good{ color:var(--accent); }
+  .linkbtn{
+    background:none; border:none; padding:0; cursor:pointer; color:var(--accent);
+    font:inherit; font-size:11.5px; text-decoration:underline;
+  }
   #startwrap{ margin-top:16px; padding-top:14px; border-top:1px solid var(--line); }
   .hidden{ display:none !important; }
   header.masthead .who{ font-size:12.5px; color:var(--ink-2); margin-left:auto; }
@@ -529,11 +548,44 @@
 
   <!-- ---------- not signed in ---------- -->
   <section class="card hidden" id="view-auth">
-    <h2>Sign in</h2>
-    <p class="note">Enter your email and we'll send you a one-time sign-in link. No password to remember.</p>
-    <label for="email">Email</label>
-    <input type="email" id="email" placeholder="you@example.com" autocomplete="email">
-    <button class="btn primary" id="sendlink" type="button">Email me a link</button>
+    <div class="authtabs" role="tablist">
+      <button class="authtab on" id="tab-signup" type="button" role="tab">Create account</button>
+      <button class="authtab"    id="tab-signin" type="button" role="tab">Sign in</button>
+    </div>
+
+    <div id="pane-signup">
+      <p class="note">Pick a username your league will see, then an email and a password.</p>
+      <label for="su-user">Username</label>
+      <input type="text" id="su-user" placeholder="benglaubke" autocomplete="username" maxlength="20">
+      <p class="fieldnote" id="su-user-note">3 to 20 characters. Letters, numbers and underscores, starting with a letter.</p>
+      <label for="su-email">Email</label>
+      <input type="email" id="su-email" placeholder="you@example.com" autocomplete="email">
+      <label for="su-pass">Password</label>
+      <input type="password" id="su-pass" placeholder="At least 8 characters" autocomplete="new-password">
+      <p class="fieldnote" id="su-pass-note">At least 8 characters.</p>
+      <button class="btn primary" id="signup" type="button">Create account</button>
+    </div>
+
+    <div id="pane-signin" class="hidden">
+      <p class="note">Sign in with the email and password you signed up with.</p>
+      <label for="si-email">Email</label>
+      <input type="email" id="si-email" placeholder="you@example.com" autocomplete="email">
+      <label for="si-pass">Password</label>
+      <input type="password" id="si-pass" autocomplete="current-password">
+      <button class="btn primary" id="signin" type="button">Sign in</button>
+      <p class="fieldnote" style="margin-top:14px">
+        Can't remember it? <button type="button" class="linkbtn" id="sendlink">Email me a sign-in link instead</button>.
+      </p>
+    </div>
+  </section>
+
+  <section class="card hidden" id="view-username">
+    <h2>Pick a username</h2>
+    <p class="note" id="un-why">This is the name your league sees. You only do this once.</p>
+    <label for="un-input">Username</label>
+    <input type="text" id="un-input" maxlength="20" autocomplete="username" placeholder="benglaubke">
+    <p class="fieldnote" id="un-note">3 to 20 characters. Letters, numbers and underscores, starting with a letter.</p>
+    <button class="btn primary" id="un-save" type="button">Save username</button>
   </section>
 
   <!-- ---------- signed in, no league ---------- -->
