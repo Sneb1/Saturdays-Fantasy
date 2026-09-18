@@ -25,6 +25,7 @@
   /* ---- league state, mirrored from the database ------------------------- */
   var sb = null, me = null, profile = null, LG = null, TEAMS = [], ME = 0, skew = 0;
   var LEAGUES = [], HOMECARDS = [], selectedId = null, healed = false;
+  var recovery = false, recoveryErr = "";   /* a password-reset link is open */
   var chPicks = null, chLeague = null, chTeams = null, chResults = null;
   var inflight = false, lastSaved = "", booted = false;
 
@@ -1508,7 +1509,8 @@
   function needsUsername(){ return !!me && !(profile && profile.username); }
 
   function hideAll(){
-    ["view-home","view-auth","view-username","view-new","view-join","view-league","view-settings"]
+    ["view-home","view-auth","view-newpass","view-username","view-new","view-join",
+      "view-league","view-settings"]
       .forEach(function(k){ show(k, false); });
     ["setup","draft","season"].forEach(function(k){
       var e = el("screen-" + k); if (e) e.hidden = true;
@@ -1542,6 +1544,16 @@
   function route(){
     var signedIn = !!me;
     hideAll();
+
+    /* A reset link owns the page until a password is saved. Routing anywhere
+       else would drop the one session that is allowed to change it. */
+    if (recovery){
+      show("view-newpass", true);
+      show("homebtn", false); show("signout", false);
+      var rsub = el("sub"); if (rsub) rsub.textContent = "Password";
+      return;
+    }
+
     show("signout", signedIn);
 
     /* Home only. The Create account / Sign in buttons swap to the form -
@@ -1750,7 +1762,14 @@
     var s = await sb.auth.getSession();
     me = s.data.session && s.data.session.user;
     el("boot").textContent = "";
-    if (!me){ LG = null; profile = null; el("who").textContent = ""; route(); return; }
+    if (!me){
+      /* The link carried type=recovery but no session came back with it, so it
+         was expired or already spent. Fall through to the sign-in screen and
+         let the caller say so. */
+      if (recovery){ recovery = false; recoveryErr = recoveryErr || "expired"; }
+      LG = null; profile = null; el("who").textContent = ""; route(); return;
+    }
+    if (recovery){ el("who").textContent = ""; route(); return; }
 
     var pr = await sb.from("profiles").select("*").eq("id", me.id).limit(1);
     profile = (!pr.error && pr.data && pr.data[0]) || null;
@@ -1885,6 +1904,55 @@
       say("Sent. The link in that email signs you straight in.");
     });
 
+    el("forgot").addEventListener("click", async function(){
+      var email = el("si-email").value.trim();
+      if (!email || email.indexOf("@") < 1)
+        return say("Put your email in the box above first, then click this.", true);
+      this.disabled = true; say("");
+      var res = await sb.auth.resetPasswordForEmail(email,
+        {redirectTo: location.href.split("#")[0]});
+      this.disabled = false;
+      if (res.error) return say(res.error.message, true);
+      /* Deliberately the same answer whether or not that email has an account -
+         otherwise this box tells a stranger who is signed up here. */
+      say("If there's an account on " + email + ", a reset link is on its way. "
+        + "Opening it brings you back here to pick a new password.");
+    });
+
+    function passNote(){
+      var a = el("np-pass").value, bb = el("np-again").value;
+      noteFor("np-note",
+              a.length === 0 ? "At least 8 characters."
+              : a.length < 8 ? "Too short - " + (8 - a.length) + " more to go."
+              : "Long enough.",
+              a.length === 0 ? "" : (a.length < 8 ? "bad" : "good"));
+      noteFor("np-match", !bb ? "" : (a === bb ? "They match." : "Not the same yet."),
+              !bb ? "" : (a === bb ? "good" : "bad"));
+    }
+    el("np-pass").addEventListener("input", passNote);
+    el("np-again").addEventListener("input", passNote);
+
+    el("np-save").addEventListener("click", async function(){
+      var a = el("np-pass").value, bb = el("np-again").value;
+      if (a.length < 8) return say("Your password needs at least 8 characters.", true);
+      if (a !== bb)     return say("The two passwords don't match.", true);
+      this.disabled = true; say("");
+      var res = await sb.auth.updateUser({password: a});
+      this.disabled = false;
+      if (res.error){
+        var m = res.error.message || "";
+        if (/session|token|expired|missing/i.test(m))
+          return say("That reset link has expired. Ask for a new one from the sign-in screen.", true);
+        return say(m, true);
+      }
+      el("np-pass").value = ""; el("np-again").value = "";
+      noteFor("np-note", "At least 8 characters.", ""); noteFor("np-match", "", "");
+      recovery = false; recoveryErr = "";
+      if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+      say("Password saved. You're signed in.");
+      boot();
+    });
+
     el("un-save").addEventListener("click", async function(){
       var u = el("un-input").value.trim();
       var bad = usernameShape(u);
@@ -1956,9 +2024,34 @@
     say("config.js is missing its Supabase values.", true);
     return;
   }
+  /* A reset link lands back here as #access_token=...&type=recovery.
+     supabase-js swallows that hash the moment the client is built, so it has
+     to be read first - by the time boot() runs there is nothing left to read. */
+  (function(){
+    var h = location.hash || "";
+    if (/[#&]type=recovery(&|$)/.test(h)) recovery = true;
+    if (/[#&]error(_code|_description)?=/.test(h)){
+      recoveryErr = "bad link";
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  })();
+
   sb = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
   wire();
-  sb.auth.onAuthStateChange(function(){ if (booted) boot(); });
+  sb.auth.onAuthStateChange(function(ev){
+    /* Belt and braces: some Supabase configurations hand the reset back through
+       a code exchange rather than a hash, and this event is the only signal. */
+    if (ev === "PASSWORD_RECOVERY"){ recovery = true; route(); return; }
+    if (booted) boot();
+  });
   booted = true;
-  boot();
+  boot().then(function(){
+    if (recoveryErr && !recovery){
+      recoveryErr = "";
+      hideAll(); show("view-auth", true);
+      el("tab-signin").click();
+      say("That link didn't work - reset links expire, and each one only opens once. "
+        + "Put your email in below and ask for a fresh one.", true);
+    }
+  });
 })();
