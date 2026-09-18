@@ -24,7 +24,7 @@
 
   /* ---- league state, mirrored from the database ------------------------- */
   var sb = null, me = null, profile = null, LG = null, TEAMS = [], ME = 0, skew = 0;
-  var LEAGUES = [], HOMECARDS = [], selectedId = null;
+  var LEAGUES = [], HOMECARDS = [], selectedId = null, healed = false;
   var chPicks = null, chLeague = null, chTeams = null, chResults = null;
   var inflight = false, lastSaved = "", booted = false;
 
@@ -212,6 +212,34 @@
     route();
   }
 
+  /* Reload everything about the league we are looking at, in the right order.
+     The bug this fixes: when the last pick lands, the phase flips to "season"
+     and the rosters are written to the teams table in the same instant. A
+     client that reacted to the league row alone would route into the season
+     holding the teams it read before the draft finished - empty rosters, so no
+     starting lineup. Whoever made the last pick saw it work and everyone else
+     did not, which is exactly what that race looks like. */
+  async function syncLeague(){
+    if (!selectedId) return;
+    var lr = await sb.from("leagues").select("*").eq("id", selectedId).limit(1);
+    if (lr.error || !lr.data || !lr.data.length) return;
+    applyLeague(lr.data[0]);
+    var tr = await sb.from("teams").select("*").eq("league_id", LG.id);
+    if (!tr.error) applyTeams(tr.data);
+    var pr = await sb.from("picks").select("*").eq("league_id", LG.id);
+    if (!pr.error) applyPicks(pr.data);
+    var rr = await sb.from("results").select("*").eq("league_id", LG.id);
+    if (!rr.error) applyResults(rr.data);
+    var lu = await sb.from("lineups").select("slots")
+                     .eq("team_id", TEAMS[ME] ? TEAMS[ME].id : "none").eq("week", week);
+    if (!lu.error && lu.data && lu.data.length && Array.isArray(lu.data[0].slots)){
+      myLineup = lu.data[0].slots.slice();
+    }
+    normaliseLineup();
+    lastSaved = JSON.stringify(myLineup);
+    route();
+  }
+
   /* A lineup has one entry per starting slot, and only players you own. */
   function normaliseLineup(){
     var own = {}; (rosters[ME] || []).forEach(function(k){ own[k] = 1; });
@@ -250,7 +278,13 @@
       .subscribe();
     chLeague = sb.channel("l-" + LG.id)
       .on("postgres_changes", {event:"UPDATE", schema:"public", table:"leagues",
-                               filter:"id=eq." + LG.id}, function(p){ applyLeague(p.new); route(); })
+                               filter:"id=eq." + LG.id}, function(p){
+        /* A phase change means the rosters and results moved too. Reload
+           everything rather than routing on the league row alone. */
+        if (p.new && (p.new.phase !== (LG && LG.phase) ||
+                      p.new.current_week !== (LG && LG.current_week))) syncLeague();
+        else { applyLeague(p.new); route(); }
+      })
       .subscribe();
     chTeams = sb.channel("t-" + LG.id)
       .on("postgres_changes", {event:"*", schema:"public", table:"teams",
@@ -258,12 +292,18 @@
         var tr = await sb.from("teams").select("*").eq("league_id", LG.id);
         if (!tr.error){ applyTeams(tr.data); route(); }
       }).subscribe();
+    /* No server-side filter here on purpose. Row level security already
+       limits these events to leagues this account is in, and the filtered
+       subscription was not reliably delivering - non-commissioners had to
+       reload to see a week that had been played. */
     chResults = sb.channel("r-" + LG.id)
-      .on("postgres_changes", {event:"*", schema:"public", table:"results",
-                               filter:"league_id=eq." + LG.id}, async function(){
-        var rr = await sb.from("results").select("*").eq("league_id", LG.id);
-        if (!rr.error){ applyResults(rr.data); route(); }
-      }).subscribe();
+      .on("postgres_changes", {event:"*", schema:"public", table:"results"},
+        async function(p){
+          var row = p.new || p.old;
+          if (row && row.league_id && LG && row.league_id !== LG.id) return;
+          var rr = await sb.from("results").select("*").eq("league_id", LG.id);
+          if (!rr.error){ applyResults(rr.data); route(); }
+        }).subscribe();
   }
 
   /* ---- league settings panel (from the lobby) ---- */
@@ -924,6 +964,14 @@
      landed, so the season starts from the database, not from this page. */
   function startSeason(){
     clearTimeout(cpuTimer); clearInterval(ticker);
+    /* If the rosters are not here yet the draft only just finished and the
+       teams table has not been re-read. Fetch it once rather than render a
+       season with nobody on any team - once, because a roster can legitimately
+       be empty, and re-syncing on an empty roster forever is an infinite loop
+       that takes the page down with it. */
+    if (!(rosters[ME] || []).length && LG && LG.phase !== "setup" && !healed){
+      healed = true; syncLeague(); return;
+    }
     viewWeek = week;
     stab = "matchup"; faFilter = "ALL"; pendingAdd = null; message = null; arm = null;
     normaliseLineup();
@@ -1473,14 +1521,14 @@
     return m ? m[1] : null;
   }
   function goHome(){
-    selectedId = null;
+    selectedId = null; healed = false;
     if (location.hash) history.pushState(null, "", location.pathname + location.search);
-    clearInterval(ticker); clearTimeout(cpuTimer);
+    clearInterval(ticker); clearTimeout(cpuTimer); seasonWatch(false);
     screen = "home"; LG = null;
     say(""); route();
   }
   function openLeague(id){
-    selectedId = id;
+    selectedId = id; healed = false;
     history.pushState(null, "", location.pathname + location.search + "#l=" + id);
     say("");
     (async function(){ await loadAll(); if (LG) watch(); route(); })();
@@ -1496,7 +1544,9 @@
     hideAll();
     show("signout", signedIn);
 
-    if (!signedIn){ show("view-auth", true); show("homebtn", false); renderHome(); show("view-home", true); return; }
+    /* Home only. The Create account / Sign in buttons swap to the form -
+       showing both at once was just the same choice twice. */
+    if (!signedIn){ show("homebtn", false); renderHome(); show("view-home", true); return; }
     if (needsUsername()){ show("view-username", true); show("homebtn", false); return; }
 
     var atHome = !selectedId || !LG;
@@ -1511,6 +1561,7 @@
 
     var phase = LG.phase;
     var lobby = phase === "setup";
+    seasonWatch(phase === "season" || phase === "done");
     show("view-league",   lobby);
     show("view-settings", lobby);
     if (lobby){
@@ -1630,6 +1681,30 @@
     foot.textContent = HOMECARDS.length === 1
       ? "Open your league to draft, set a lineup, or play a week."
       : "Open any league to draft, set a lineup, or play a week.";
+  }
+
+  /* Realtime is the fast path, but a missed event on the season screen means
+     somebody stares at a week that has already been played. Poll a tiny query
+     alongside it - two indexed columns, no jsonb - and redraw when the answer
+     changes. Cheap insurance against a subscription that quietly is not
+     delivering. */
+  var seasonPoll = null, lastSeen = "";
+  function seasonWatch(on){
+    if (!on){ clearInterval(seasonPoll); seasonPoll = null; return; }
+    if (seasonPoll) return;
+    seasonPoll = setInterval(async function(){
+      if (!LG || !selectedId) return;
+      var lr = await sb.from("leagues").select("phase, current_week").eq("id", LG.id).limit(1);
+      var rr = await sb.from("results").select("week").eq("league_id", LG.id);
+      if (lr.error || rr.error) return;
+      var l = lr.data && lr.data[0];
+      if (!l) return;
+      var sig = l.phase + ":" + l.current_week + ":" +
+                (rr.data || []).map(function(r){ return r.week; }).sort(function(a,b){return a-b;}).join(",");
+      if (sig === lastSeen) return;
+      lastSeen = sig;
+      await syncLeague();
+    }, 8000);
   }
 
   function renderLobby(){
