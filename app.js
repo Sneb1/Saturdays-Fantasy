@@ -1558,7 +1558,21 @@
 
     /* Home only. The Create account / Sign in buttons swap to the form -
        showing both at once was just the same choice twice. */
-    if (!signedIn){ show("homebtn", false); renderHome(); show("view-home", true); return; }
+    if (!signedIn){
+      show("homebtn", false);
+      /* A spent or expired reset link. Put them on the box that fixes it rather
+         than the front page, and keep them there: supabase-js fires an auth
+         event a moment after start-up, which re-runs boot() and re-routes. */
+      if (recoveryErr){
+        show("view-auth", true);
+        show("pane-signup", false); show("pane-signin", true);
+        el("tab-signup").classList.remove("on"); el("tab-signin").classList.add("on");
+        say("That link didn't work - reset links expire, and each one only opens once. "
+          + "Put your email in below and ask for a fresh one.", true);
+        return;
+      }
+      renderHome(); show("view-home", true); return;
+    }
     if (needsUsername()){ show("view-username", true); show("homebtn", false); return; }
 
     var atHome = !selectedId || !LG;
@@ -1766,7 +1780,10 @@
       /* The link carried type=recovery but no session came back with it, so it
          was expired or already spent. Fall through to the sign-in screen and
          let the caller say so. */
-      if (recovery){ recovery = false; recoveryErr = recoveryErr || "expired"; }
+      if (recovery){
+        recovery = false; recoveryErr = recoveryErr || "expired";
+        if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+      }
       LG = null; profile = null; el("who").textContent = ""; route(); return;
     }
     if (recovery){ el("who").textContent = ""; route(); return; }
@@ -1797,6 +1814,7 @@
       show("pane-signin", which === "signin");
       el("tab-signup").classList.toggle("on", which === "signup");
       el("tab-signin").classList.toggle("on", which === "signin");
+      recoveryErr = "";
       say("");
     }
     el("tab-signup").addEventListener("click", function(){ authPane("signup"); });
@@ -1915,6 +1933,7 @@
       if (res.error) return say(res.error.message, true);
       /* Deliberately the same answer whether or not that email has an account -
          otherwise this box tells a stranger who is signed up here. */
+      recoveryErr = "";
       say("If there's an account on " + email + ", a reset link is on its way. "
         + "Opening it brings you back here to pick a new password.");
     });
@@ -2045,13 +2064,5 @@
     if (booted) boot();
   });
   booted = true;
-  boot().then(function(){
-    if (recoveryErr && !recovery){
-      recoveryErr = "";
-      hideAll(); show("view-auth", true);
-      el("tab-signin").click();
-      say("That link didn't work - reset links expire, and each one only opens once. "
-        + "Put your email in below and ask for a fresh one.", true);
-    }
-  });
+  boot();
 })();
