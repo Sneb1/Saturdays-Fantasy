@@ -24,6 +24,7 @@
 
   /* ---- league state, mirrored from the database ------------------------- */
   var sb = null, me = null, profile = null, LG = null, TEAMS = [], ME = 0, skew = 0;
+  var LEAGUES = [], HOMECARDS = [], selectedId = null;
   var chPicks = null, chLeague = null, chTeams = null, chResults = null;
   var inflight = false, lastSaved = "", booted = false;
 
@@ -137,9 +138,48 @@
     }
   }
 
+  /* Every league this account is in. Row level security already limits the
+     answer to leagues you are a member of or commissioner of, so no filter
+     is needed here - and none would be trustworthy if it were. */
+  async function loadLeagues(){
+    var lr = await sb.from("leagues").select("*");
+    if (lr.error){ say(lr.error.message, true); LEAGUES = []; return; }
+    LEAGUES = (lr.data || []).slice().sort(function(a,b){
+      return String(a.created_at).localeCompare(String(b.created_at));
+    });
+    if (!LEAGUES.length){ HOMECARDS = []; return; }
+    var ids = LEAGUES.map(function(l){ return l.id; });
+
+    /* One round trip for every league's teams, and one for how many weeks
+       have been played, rather than a query per card. */
+    var tr = await sb.from("teams").select("id, league_id, owner, name, draft_slot").in("league_id", ids);
+    var rr = await sb.from("results").select("league_id, week").in("league_id", ids);
+    var teams = (tr.error ? [] : tr.data) || [];
+    var played = {};
+    if (!rr.error) (rr.data || []).forEach(function(r){
+      played[r.league_id] = Math.max(played[r.league_id] || 0, r.week);
+    });
+    HOMECARDS = LEAGUES.map(function(l){
+      var mine = teams.filter(function(t){ return t.league_id === l.id; });
+      var own  = mine.filter(function(t){ return me && t.owner === me.id; })[0];
+      return {
+        league: l,
+        teamName: own ? own.name : null,
+        teams: mine.length,
+        seats: parseInt((l.settings || {}).teams, 10) || mine.length,
+        weeksPlayed: played[l.id] || 0,
+        commish: !!(me && l.commissioner === me.id)
+      };
+    });
+  }
+
+  /* Load the one league we are looking at. Read it fresh rather than taking
+     the copy from the home-screen list - that copy goes stale the moment the
+     phase changes, which is exactly when this runs. */
   async function loadAll(){
-    var lr = await sb.from("leagues").select("*").limit(1);
-    if (lr.error) return say(lr.error.message, true);
+    if (!selectedId){ LG = null; return; }
+    var lr = await sb.from("leagues").select("*").eq("id", selectedId).limit(1);
+    if (lr.error){ say(lr.error.message, true); LG = null; return; }
     if (!lr.data || !lr.data.length){ LG = null; return; }
     applyLeague(lr.data[0]);
     var tr = await sb.from("teams").select("*").eq("league_id", LG.id);
@@ -1419,35 +1459,64 @@
   }
   function needsUsername(){ return !!me && !(profile && profile.username); }
 
-  function route(){
-    var signedIn = !!me;
-    show("view-auth", !signedIn);
-    show("signout", signedIn);
-    show("view-username", needsUsername());
-    if (needsUsername()){
-      /* Nothing else until they have a name - it is what the league sees. */
-      ["view-new","view-join","view-league","view-settings"].forEach(function(k){ show(k, false); });
-      ["setup","draft","season"].forEach(function(k){
-        var e = el("screen-" + k); if (e) e.hidden = true;
-      });
-      return;
-    }
-    var inLeague = signedIn && !!LG;
-    var phase = LG ? LG.phase : null;
-    var lobby = inLeague && phase === "setup";
-
-    show("view-new",      signedIn && !LG);
-    show("view-join",     signedIn && !LG);
-    show("view-league",   lobby);
-    show("view-settings", lobby);
+  function hideAll(){
+    ["view-home","view-auth","view-username","view-new","view-join","view-league","view-settings"]
+      .forEach(function(k){ show(k, false); });
     ["setup","draft","season"].forEach(function(k){
       var e = el("screen-" + k); if (e) e.hidden = true;
     });
+  }
+  /* Which league we are looking at lives in the address bar, so the back
+     button works and a league can be linked to. */
+  function hashLeague(){
+    var m = /[#&]l=([^&]+)/.exec(location.hash || "");
+    return m ? m[1] : null;
+  }
+  function goHome(){
+    selectedId = null;
+    if (location.hash) history.pushState(null, "", location.pathname + location.search);
+    clearInterval(ticker); clearTimeout(cpuTimer);
+    screen = "home"; LG = null;
+    say(""); route();
+  }
+  function openLeague(id){
+    selectedId = id;
+    history.pushState(null, "", location.pathname + location.search + "#l=" + id);
+    say("");
+    (async function(){ await loadAll(); if (LG) watch(); route(); })();
+  }
+  window.addEventListener("popstate", function(){
+    var h = hashLeague();
+    if (h && h !== selectedId){ selectedId = h; loadAll().then(function(){ if (LG) watch(); route(); }); }
+    else if (!h){ goHome(); }
+  });
 
-    if (!inLeague){ showScreen("setup"); el("screen-setup").hidden = true; return; }
+  function route(){
+    var signedIn = !!me;
+    hideAll();
+    show("signout", signedIn);
+
+    if (!signedIn){ show("view-auth", true); show("homebtn", false); renderHome(); show("view-home", true); return; }
+    if (needsUsername()){ show("view-username", true); show("homebtn", false); return; }
+
+    var atHome = !selectedId || !LG;
+    show("homebtn", !atHome);
+    if (atHome){
+      renderHome();
+      show("view-home", true);
+      var sub = el("sub"); if (sub) sub.textContent = "Home";
+      screen = "home";
+      return;
+    }
+
+    var phase = LG.phase;
+    var lobby = phase === "setup";
+    show("view-league",   lobby);
+    show("view-settings", lobby);
     if (lobby){
       el("league-name").textContent = LG.name;
       el("code-val").textContent = LG.join_code;
+      var sub2 = el("sub"); if (sub2) sub2.textContent = LG.name;
       renderSettings();
       renderLobby();
       return;
@@ -1466,6 +1535,101 @@
     clearInterval(ticker); clearTimeout(cpuTimer);
     SLOTS = slotList();
     if (screen !== "season") startSeason(); else renderSeason();
+  }
+
+  /* ---- home ---- */
+  function phaseWord(p){
+    return p === "setup" ? "Setting up" : p === "draft" ? "Drafting"
+         : p === "done" ? "Finished" : "In season";
+  }
+  function actBtn(label, primary, onClick){
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn" + (primary ? " primary" : "");
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+  function renderHome(){
+    var acts = el("home-acts"), host = el("home-leagues"), foot = el("home-foot");
+    if (!acts) return;
+    acts.innerHTML = ""; host.innerHTML = "";
+
+    if (!me){
+      acts.appendChild(actBtn("Create an account", true, function(){
+        hideAll(); show("view-auth", true);
+        el("tab-signup").click();
+        el("su-user").focus();
+      }));
+      acts.appendChild(actBtn("Sign in", false, function(){
+        hideAll(); show("view-auth", true);
+        el("tab-signin").click();
+        el("si-email").focus();
+      }));
+      foot.textContent = "Make an account to start a league or join a friend's with their code.";
+      return;
+    }
+
+    acts.appendChild(actBtn("Start a league", true, function(){
+      hideAll(); show("view-new", true); show("view-join", true); el("lname").focus();
+    }));
+    acts.appendChild(actBtn("Join a league", false, function(){
+      hideAll(); show("view-new", true); show("view-join", true); el("code").focus();
+    }));
+
+    if (!HOMECARDS.length){
+      foot.textContent = "You're not in a league yet. Start one and send the code to your friends, "
+                       + "or paste in a code somebody sent you.";
+      return;
+    }
+
+    var sec = document.createElement("div");
+    sec.className = "lgsec";
+    var h = document.createElement("h3");
+    h.textContent = HOMECARDS.length === 1 ? "Your league" : "Your leagues";
+    sec.appendChild(h);
+
+    HOMECARDS.forEach(function(c){
+      var l = c.league;
+      var card = document.createElement("button");
+      card.type = "button";
+      card.className = "lgcard";
+
+      var main = document.createElement("span");
+      main.className = "lgmain";
+      var nm = document.createElement("span");
+      nm.className = "lgname";
+      nm.textContent = l.name;
+      var sub = document.createElement("span");
+      sub.className = "lgsub";
+
+      var bits = [];
+      if (c.teamName) bits.push(c.teamName);
+      if (l.phase === "setup") bits.push(c.teams + " of " + c.seats + " claimed");
+      else if (l.phase === "draft") bits.push("draft under way");
+      else bits.push(c.weeksPlayed ? "through week " + c.weeksPlayed : "week 1 to play");
+      if (c.commish) bits.push("you're the commissioner");
+      sub.textContent = bits.join("  ·  ");
+
+      main.appendChild(nm); main.appendChild(sub);
+
+      var tag = document.createElement("span");
+      tag.className = "phase";
+      tag.setAttribute("data-phase", l.phase);
+      tag.textContent = phaseWord(l.phase);
+
+      var go = document.createElement("span");
+      go.className = "go";
+      go.textContent = ">";
+
+      card.appendChild(main); card.appendChild(tag); card.appendChild(go);
+      card.addEventListener("click", function(){ openLeague(l.id); });
+      sec.appendChild(card);
+    });
+    host.appendChild(sec);
+    foot.textContent = HOMECARDS.length === 1
+      ? "Open your league to draft, set a lineup, or play a week."
+      : "Open any league to draft, set a lineup, or play a week.";
   }
 
   function renderLobby(){
@@ -1518,14 +1682,17 @@
     el("who").textContent = (profile && profile.username) || me.email;
     if (needsUsername()){ LG = null; route(); return; }
 
+    await loadLeagues();
+    selectedId = hashLeague();
+    if (selectedId && !LEAGUES.some(function(l){ return l.id === selectedId; })) selectedId = null;
+
     /* Measure this browser's clock against the server's once, so the draft
        countdown is the same everywhere. */
     var t0 = Date.now();
     var sn = await sb.rpc("server_now");
     if (!sn.error && sn.data) skew = Date.parse(sn.data) - (t0 + Date.now()) / 2;
 
-    await loadAll();
-    if (LG) watch();
+    if (selectedId){ await loadAll(); if (LG) watch(); }
     route();
   }
 
@@ -1667,7 +1834,9 @@
         settings:    DEFAULTS});
       this.disabled = false;
       if (res.error) return say(res.error.message, true);
-      await loadAll(); if (LG) watch(); route();
+      var made = res.data && res.data[0] && res.data[0].league_id;
+      await loadLeagues();
+      if (made) openLeague(made); else { goHome(); }
     });
     el("join").addEventListener("click", async function(){
       var code = el("code").value.trim().toUpperCase();
@@ -1677,13 +1846,16 @@
         team_name: el("jtname").value.trim() || "New Team"});
       this.disabled = false;
       if (res.error) return say(res.error.message, true);
-      await loadAll(); if (LG) watch(); route();
+      await loadLeagues();
+      if (res.data) openLeague(res.data); else { goHome(); }
     });
     el("copy").addEventListener("click", async function(){
       try { await navigator.clipboard.writeText(LG.join_code); this.textContent = "Copied";
             var b = this; setTimeout(function(){ b.textContent = "Copy"; }, 1500); }
       catch (e){ say("Couldn't copy - the code is " + LG.join_code, true); }
     });
+    el("gohome").addEventListener("click", goHome);
+    el("homebtn").addEventListener("click", goHome);
     el("startdraft").addEventListener("click", function(){ startDraft(); });
     el("revert-settings").addEventListener("click", function(){ dirty = false; renderSettings(); say(""); });
     el("save-settings").addEventListener("click", async function(){
