@@ -506,9 +506,48 @@
   /* The lobby keeps a narrow measure. The draft board and the season screens
      need the full width, so .wrap stays wide and the lobby cards are the ones
      that are constrained. */
-  #view-auth, #view-new, #view-join, #view-league, #view-settings{
+  #view-home, #view-auth, #view-username, #view-new, #view-join, #view-league, #view-settings{
     max-width:720px; margin:0 auto 16px; padding:18px 18px 20px;
   }
+  .hero h2{ font-family:var(--display); font-size:22px; letter-spacing:.04em;
+            text-transform:uppercase; margin:0 0 8px; }
+  .hero > p{ font-size:15px; color:var(--ink-2); margin:0 0 14px; max-width:56ch; }
+  .herolist{ list-style:none; margin:0 0 4px; padding:0; }
+  .herolist li{ font-size:13.5px; color:var(--ink-2); padding:6px 0 6px 16px;
+                position:relative; line-height:1.45; }
+  .herolist li:before{ content:""; position:absolute; left:0; top:13px; width:6px; height:6px;
+                       border-radius:50%; background:var(--accent); }
+  .herolist b{ color:var(--ink); font-weight:600; }
+  .homeacts{ display:flex; gap:10px; flex-wrap:wrap; margin:18px 0 4px;
+             padding-top:16px; border-top:1px solid var(--line); }
+  .lgsec{ margin-top:22px; }
+  .lgsec h3{ font-family:var(--display); font-size:11px; letter-spacing:.14em;
+             text-transform:uppercase; color:var(--ink-2); font-weight:600;
+             margin:0 0 10px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+  .lgcard{ display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+           background:var(--surface-2); border:1px solid var(--line); border-radius:var(--r);
+           padding:13px 15px; margin-bottom:9px; cursor:pointer; font:inherit; color:inherit; }
+  .lgcard:hover{ border-color:var(--accent); background:var(--accent-soft); }
+  .lgcard .lgname{ font-family:var(--display); font-size:17px; letter-spacing:.05em;
+                   text-transform:uppercase; display:block; }
+  .lgcard .lgsub{ font-size:12.5px; color:var(--ink-2); display:block; margin-top:2px; }
+  .lgcard .lgmain{ flex:1 1 auto; min-width:0; }
+  .lgcard .go{ flex:0 0 auto; font-family:var(--mono); font-size:16px; color:var(--ink-2); }
+  /* flex:0 0 auto, or the badge stretches across whatever space the wrapped
+     subtitle leaves behind instead of hugging its own text */
+  .phase{ flex:0 0 auto; align-self:center;
+          font-size:9px; letter-spacing:.12em; text-transform:uppercase; font-weight:600;
+          padding:3px 8px; border-radius:3px; white-space:nowrap; }
+  /* A data attribute, not a second class. "setup" and "season" are already
+     layout classes in the draft and season screens - putting them on a badge
+     turned it into a 640px grid. */
+  .phase[data-phase="setup"] { background:var(--gold-soft); color:var(--gold); border:1px solid var(--gold-line); }
+  .phase[data-phase="draft"] { background:var(--accent); color:var(--accent-ink); }
+  .phase[data-phase="season"]{ background:var(--surface); color:var(--ink-2); border:1px solid var(--line); }
+  .phase[data-phase="done"]  { background:var(--ink); color:var(--bg); }
+  .wordmark{ background:none; border:none; padding:0; cursor:pointer; font:inherit;
+             color:inherit; text-align:left; }
+  .wordmark:hover h1{ color:var(--accent); }
   .lobby-slot{ font-family:var(--mono); font-size:11px; color:var(--ink-2); width:26px; }
   input[type=password]{
     width:100%; background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
@@ -538,13 +577,33 @@
 <body>
 <div class="wrap">
   <header class="masthead">
-    <h1>Saturdays Fantasy</h1>
+    <button class="wordmark" id="gohome" type="button" title="Home">
+      <h1>Saturdays Fantasy</h1>
+    </button>
     <span class="sub" id="sub">League</span>
     <span class="who" id="who"></span>
+    <button class="btn hidden" id="homebtn" type="button">Home</button>
     <button class="btn hidden" id="signout" type="button">Sign out</button>
   </header>
 
   <div id="msg"></div>
+
+  <!-- ---------- home ---------- -->
+  <section class="card hidden" id="view-home">
+    <div class="hero">
+      <h2>College fantasy football, for Saturdays</h2>
+      <p>Draft college players, set a lineup every week, and play your friends through a
+         season and a playoff. Free, no ads, nothing to bet.</p>
+      <ul class="herolist">
+        <li><b>A real draft.</b> Snake order, a pick clock, and a board everyone watches live.</li>
+        <li><b>A real season.</b> Weekly matchups, standings, free agency, then a bracket.</li>
+        <li><b>Nobody sits out.</b> Any seat your friends don't take is drafted by the computer.</li>
+      </ul>
+    </div>
+    <div class="homeacts" id="home-acts"></div>
+    <div id="home-leagues"></div>
+    <p class="foot" id="home-foot"></p>
+  </section>
 
   <!-- ---------- not signed in ---------- -->
   <section class="card hidden" id="view-auth">
