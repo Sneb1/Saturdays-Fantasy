@@ -506,7 +506,7 @@
   /* The lobby keeps a narrow measure. The draft board and the season screens
      need the full width, so .wrap stays wide and the lobby cards are the ones
      that are constrained. */
-  #view-home, #view-auth, #view-username, #view-new, #view-join, #view-league, #view-settings{
+  #view-home, #view-auth, #view-username, #view-newpass, #view-new, #view-join, #view-league, #view-settings{
     max-width:720px; margin:0 auto 16px; padding:18px 18px 20px;
   }
   .hero h2{ font-family:var(--display); font-size:22px; letter-spacing:.04em;
@@ -633,9 +633,23 @@
       <input type="password" id="si-pass" autocomplete="current-password">
       <button class="btn primary" id="signin" type="button">Sign in</button>
       <p class="fieldnote" style="margin-top:14px">
-        Can't remember it? <button type="button" class="linkbtn" id="sendlink">Email me a sign-in link instead</button>.
+        <button type="button" class="linkbtn" id="forgot">Forgot your password?</button>
+        &nbsp;&middot;&nbsp;
+        <button type="button" class="linkbtn" id="sendlink">Email me a sign-in link instead</button>
       </p>
     </div>
+  </section>
+
+  <section class="card hidden" id="view-newpass">
+    <h2 id="np-title">Choose a password</h2>
+    <p class="note" id="np-why">Pick a new password for your account. You'll use it to sign in from now on.</p>
+    <label for="np-pass">New password</label>
+    <input type="password" id="np-pass" placeholder="At least 8 characters" autocomplete="new-password">
+    <p class="fieldnote" id="np-note">At least 8 characters.</p>
+    <label for="np-again">Type it again</label>
+    <input type="password" id="np-again" autocomplete="new-password">
+    <p class="fieldnote" id="np-match"></p>
+    <button class="btn primary" id="np-save" type="button">Save password</button>
   </section>
 
   <section class="card hidden" id="view-username">
