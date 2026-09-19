@@ -101,6 +101,10 @@
     POSITIONS.forEach(function(p){
       cfg.slots[p] = parseInt((s.slots || {})[p], 10) || 0;
     });
+    /* The scoring table is league state like anything else, and this is the
+       one place league state lands. Pool holds the active table so the
+       hundreds of scoring call sites do not each have to be handed one. */
+    Pool.setScoring(s.scoring);
     SLOTS = slotList();
     week = row.current_week || 1;
     if (viewWeek < 1 || viewWeek > totalWeeks()) viewWeek = week;
@@ -319,11 +323,16 @@
     playoff: 4
   };
 
+  /* Each group says when it stops being editable, and why. "lock" is the
+     phase at which the door closes; "why" is what would break if it did not. */
   var GROUPS = [
-    {title:"League", fields:[
+    {title:"League", lock:"draft",
+     why:"the draft order and the CPU seats are built from it", fields:[
       {key:"teams", label:"Teams", min:2, max:16, hint:"Managers, including you"}
     ]},
-    {title:"Starting lineup", fields:[
+    {title:"Starting lineup", lock:"draft",
+     why:"everyone drafts to this shape, and changing it later leaves teams holding "
+        +"players they cannot start", fields:[
       {key:"slots.QB",  label:"QB",   min:0, max:3},
       {key:"slots.RB",  label:"RB",   min:0, max:6},
       {key:"slots.WR",  label:"WR",   min:0, max:6},
@@ -332,13 +341,16 @@
       {key:"slots.K",   label:"K",    min:0, max:2},
       {key:"slots.DEF", label:"DEF",  min:0, max:2, hint:"A whole team's defense"}
     ]},
-    {title:"Bench", fields:[
+    {title:"Bench", lock:"draft",
+     why:"the draft runs for exactly as many rounds as a roster has spots", fields:[
       {key:"bench", label:"Bench spots", min:0, max:10, hint:"Any position"}
     ]},
-    {title:"Draft", fields:[
+    {title:"Draft", lock:"season",
+     why:"there are no picks left to clock", fields:[
       {key:"secs", label:"Pick clock", min:15, max:600, step:15, hint:"Seconds per pick"}
     ]},
-    {title:"Season", fields:[
+    {title:"Season", lock:"season",
+     why:"the schedule is already built from these", fields:[
       {key:"weeks",   label:"Weeks",        min:4, max:15, hint:"Regular season"},
       {key:"playoff", label:"Playoff teams", min:2, max:8, hint:"2, 4 or 8"}
     ]}
@@ -461,32 +473,60 @@
       "</b> teams in the playoff.";
   }
 
+  /* A group is editable while the league has not yet reached its lock phase.
+     Locked groups stay visible and keep their values - a commissioner should
+     be able to see the rules they are playing under, just not edit them. */
+  function groupOpen(g){ return !lockedAt(g.lock); }
+
   function renderSettings(){
     if (!LG) return;
     buildSettings();
+    /* Never redraw a form somebody is typing into. Realtime events and the
+       season poll both land here. */
+    if (dirty && $(fieldId(GROUPS[0].fields[0].key)) === document.activeElement) return;
     var cfg = currentCfg();
-    writeForm(cfg);
-    renderDerived(cfg);
+    if (!dirty){ writeForm(cfg); renderDerived(cfg); }
 
     var commish = amCommish();
-    var openStill = LG.phase === "setup";
-    var editable = commish && openStill;
+    var anyOpen = false;
 
     GROUPS.forEach(function(g){
-      g.fields.forEach(function(f){ $(fieldId(f.key)).disabled = !editable; });
+      var open = commish && groupOpen(g);
+      if (open) anyOpen = true;
+      g.fields.forEach(function(f){
+        var inp = $(fieldId(f.key));
+        inp.disabled = !open;
+        var d = inp.parentNode;
+        var note = d.querySelector(".lockwhy");
+        if (commish && !groupOpen(g)){
+          if (!note){
+            note = document.createElement("span");
+            note.className = "lockwhy";
+            d.appendChild(note);
+          }
+          note.textContent = "Locked once " + lockWord(g.lock) + " \u2014 " + g.why + ".";
+        } else if (note){
+          note.parentNode.removeChild(note);
+        }
+      });
     });
-    show("set-actions", editable);
-    show("set-locked", !editable);
+
+    show("set-actions", anyOpen);
+    show("set-locked", !anyOpen);
 
     $("set-note").textContent = commish
-      ? (openStill
-          ? "You're the commissioner. Change anything you like while you're waiting on friends — " +
-            "everyone's page updates as you save. These lock when the draft starts."
-          : "The draft has started, so the rules are locked in.")
+      ? (LG.phase === "setup"
+          ? "Change anything you like while you're waiting on friends \u2014 everyone's page "
+          + "updates as you save. The greyed-out ones say when they closed."
+          : anyOpen
+            ? "Some of these are still yours to change. The rest closed when the league "
+            + "moved on, and each one says why."
+            : "Everything here is locked in for this league now.")
       : "Set by the commissioner. You'll see changes here as they're made.";
 
     $("set-locked").textContent = commish
-      ? "" : "Only the commissioner can change these.";
+      ? "Nothing here can change any more without breaking a league in progress."
+      : "Only the commissioner can change these.";
   }
 
   function flashSaved(){
@@ -1494,6 +1534,390 @@
   }
 
   /* =========================================================
+     Commissioner tools
+
+     ESPN hides eighteen of these behind one "LM Tools" page, and the shape is
+     worth copying: grouped cards, one row per tool, every row saying what it
+     does before you click it.
+
+     What matters more than the layout is *when* each setting may change. A
+     league in progress is a machine with a schedule already built and rosters
+     drafted to a shape. Some settings are safe forever; others would quietly
+     break a season. Every field carries the phase it locks at and the reason,
+     and the reason is always shown - a greyed-out box with no explanation is
+     how a commissioner decides the site is broken.
+     ========================================================= */
+  var commish = null;      /* null, "hub", or a tool key */
+  var cmDirty = false;     /* a panel has unsaved edits, so do not redraw it */
+  var cmShown = null;      /* which panel the DOM is currently holding */
+
+  var PHASE_NO = {setup: 0, draft: 1, season: 2, done: 3};
+  function phaseNo(p){ return PHASE_NO[p] === undefined ? 0 : PHASE_NO[p]; }
+  function lockedAt(from){ return !!from && phaseNo(LG && LG.phase) >= phaseNo(from); }
+  function lockWord(from){ return from === "draft" ? "the draft starts" : "the season starts"; }
+
+  var TOOLS = [
+    {group: "League settings", items: [
+      {key: "rules",   name: "Rules and roster",
+       blurb: "League size, starting lineup, bench, pick clock, season length and playoffs."},
+      {key: "scoring", name: "Scoring",
+       blurb: "What every stat is worth. Changing it rescores every week already played."},
+      {key: "rename",  name: "League name",
+       blurb: "What this league is called. Safe to change whenever you like."}
+    ]},
+    {group: "Teams", items: [
+      {key: "teams",   name: "Team names",
+       blurb: "Rename any team, including the ones the computer drafts."}
+    ]}
+  ];
+  var TOOL_TITLES = {};
+  TOOLS.forEach(function(g){ g.items.forEach(function(t){ TOOL_TITLES[t.key] = t.name; }); });
+
+  /* ---- scoring table ---------------------------------------------------
+     Yardage is "1 point per N yards" rather than a per-yard decimal, because
+     that is how league rules actually get described out loud. */
+  var SCORE_GROUPS = [
+    {title: "Passing", fields: [
+      {key: "passYdsPer", label: "Yards per point", min: 1, max: 100, step: 1,
+       hint: "1 point for every this many yards"},
+      {key: "passTD", label: "Touchdown",    min: -10, max: 12, step: 0.5},
+      {key: "intc",   label: "Interception", min: -10, max: 10, step: 0.5}
+    ]},
+    {title: "Rushing", fields: [
+      {key: "rushYdsPer", label: "Yards per point", min: 1, max: 100, step: 1},
+      {key: "rushTD", label: "Touchdown", min: -10, max: 12, step: 0.5}
+    ]},
+    {title: "Receiving", fields: [
+      {key: "recYdsPer", label: "Yards per point", min: 1, max: 100, step: 1},
+      {key: "recTD", label: "Touchdown", min: -10, max: 12, step: 0.5},
+      {key: "rec",   label: "Reception", min: 0, max: 3, step: 0.5,
+       hint: "0 standard, 0.5 half PPR, 1 full PPR"}
+    ]},
+    {title: "Turnovers", fields: [
+      {key: "fum", label: "Fumble lost", min: -10, max: 0, step: 0.5,
+       hint: "A penalty, so keep it negative"}
+    ]},
+    {title: "Kicking", fields: [
+      {key: "fg0",  label: "Field goal under 40", min: -5, max: 10, step: 0.5},
+      {key: "fg40", label: "Field goal 40 to 49", min: -5, max: 10, step: 0.5},
+      {key: "fg50", label: "Field goal 50 or more", min: -5, max: 10, step: 0.5},
+      {key: "xp",   label: "Extra point", min: -5, max: 5, step: 0.5}
+    ]},
+    {title: "Defense", fields: [
+      {key: "sack",   label: "Sack", min: -5, max: 10, step: 0.5},
+      {key: "dInt",   label: "Interception", min: -5, max: 10, step: 0.5},
+      {key: "fumRec", label: "Fumble recovered", min: -5, max: 10, step: 0.5},
+      {key: "defTD",  label: "Touchdown", min: -5, max: 12, step: 0.5},
+      {key: "safety", label: "Safety", min: -5, max: 10, step: 0.5}
+    ]},
+    {title: "Points allowed", note: "What a defense scores for how many points it gives up.",
+     fields: [
+      {key: "pa0",  label: "Shutout",     min: -10, max: 20, step: 0.5},
+      {key: "pa6",  label: "1 to 6",      min: -10, max: 20, step: 0.5},
+      {key: "pa13", label: "7 to 13",     min: -10, max: 20, step: 0.5},
+      {key: "pa20", label: "14 to 20",    min: -10, max: 20, step: 0.5},
+      {key: "pa27", label: "21 to 27",    min: -10, max: 20, step: 0.5},
+      {key: "pa34", label: "28 to 34",    min: -10, max: 20, step: 0.5},
+      {key: "pa35", label: "35 or more",  min: -10, max: 20, step: 0.5}
+    ]}
+  ];
+  function fnum(v, fallback){
+    var n = parseFloat(v);
+    return isNaN(n) ? fallback : n;
+  }
+
+  /* ---- navigation ------------------------------------------------------ */
+  function hashCommish(){
+    var m = /[#&]c=([^&]+)/.exec(location.hash || "");
+    return m ? m[1] : null;
+  }
+  function commishUrl(tool){
+    return location.pathname + location.search + "#l=" + selectedId + (tool ? "&c=" + tool : "");
+  }
+  function openCommish(tool){
+    if (cmDirty && !confirm("You have unsaved changes. Leave them?")) return;
+    commish = tool; cmDirty = false; cmShown = null;
+    history.pushState(null, "", commishUrl(tool));
+    say(""); route();
+  }
+  function closeCommish(){
+    if (cmDirty && !confirm("You have unsaved changes. Leave them?")) return;
+    commish = null; cmDirty = false; cmShown = null;
+    history.pushState(null, "", commishUrl(null));
+    say(""); route();
+  }
+
+  /* ---- the hub --------------------------------------------------------- */
+  function cmRow(item){
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "cmrow";
+    var main = document.createElement("span");
+    main.className = "cmmain";
+    var n = document.createElement("span"); n.className = "cmname";  n.textContent = item.name;
+    var d = document.createElement("span"); d.className = "cmblurb"; d.textContent = item.blurb;
+    main.appendChild(n); main.appendChild(d);
+    var go = document.createElement("span"); go.className = "go"; go.textContent = ">";
+    b.appendChild(main); b.appendChild(go);
+    b.addEventListener("click", function(){ openCommish(item.key); });
+    return b;
+  }
+  function renderHub(){
+    var host = el("cm-body");
+    host.innerHTML = "";
+    TOOLS.forEach(function(g){
+      var sec = document.createElement("div");
+      sec.className = "cmsec";
+      var h = document.createElement("h3"); h.textContent = g.group;
+      sec.appendChild(h);
+      g.items.forEach(function(it){ sec.appendChild(cmRow(it)); });
+      host.appendChild(sec);
+    });
+    el("cm-note").textContent =
+      "Everything here changes the league for everyone in it. Settings that would break a "
+      + "season already under way are locked, and each one says why.";
+  }
+
+  /* ---- league name ----------------------------------------------------- */
+  function renderRename(){
+    var host = el("cm-body");
+    host.innerHTML = "";
+    el("cm-note").textContent = "Everyone sees the new name as soon as you save it.";
+    var lab = document.createElement("label");
+    lab.setAttribute("for", "cm-lname"); lab.textContent = "League name";
+    var inp = document.createElement("input");
+    inp.type = "text"; inp.id = "cm-lname"; inp.maxLength = 40;
+    inp.value = LG.name || "";
+    inp.addEventListener("input", function(){ cmDirty = true; });
+    var btn = document.createElement("button");
+    btn.type = "button"; btn.className = "btn primary"; btn.textContent = "Save name";
+    btn.style.marginTop = "6px";
+    btn.addEventListener("click", async function(){
+      var v = inp.value.trim();
+      if (v.length < 2) return say("Give the league a name of at least two characters.", true);
+      this.disabled = true; say("");
+      var res = await sb.from("leagues").update({name: v}).eq("id", LG.id).select();
+      this.disabled = false;
+      if (res.error) return say(res.error.message, true);
+      if (!res.data || !res.data.length)
+        return say("That didn't save - only the commissioner can rename the league.", true);
+      applyLeague(res.data[0]); cmDirty = false;
+      await loadLeagues();
+      say("League renamed.");
+    });
+    host.appendChild(lab); host.appendChild(inp); host.appendChild(btn);
+  }
+
+  /* ---- team names ------------------------------------------------------
+     The row-level policy on teams already allows the commissioner to update
+     any team in their league, so this needs no privileged function. */
+  function renderTeamNames(){
+    var host = el("cm-body");
+    host.innerHTML = "";
+    el("cm-note").textContent =
+      "Rename any team. CPU teams count - give them something worth beating.";
+    TEAMS.forEach(function(t, i){
+      var row = document.createElement("div");
+      row.className = "cmteam";
+      var inp = document.createElement("input");
+      inp.type = "text"; inp.maxLength = 30; inp.value = t.name || "";
+      inp.setAttribute("aria-label", "Name for team " + (i + 1));
+      inp.addEventListener("input", function(){ cmDirty = true; });
+      var tag = document.createElement("span");
+      tag.className = "cmtag";
+      tag.textContent = !t.owner ? "CPU" : (me && t.owner === me.id ? "You" : "Manager");
+      var btn = document.createElement("button");
+      btn.type = "button"; btn.className = "btn"; btn.textContent = "Save";
+      btn.addEventListener("click", async function(){
+        var v = inp.value.trim();
+        if (v.length < 2) return say("A team name needs at least two characters.", true);
+        var clash = TEAMS.some(function(o, j){
+          return j !== i && (o.name || "").toLowerCase() === v.toLowerCase();
+        });
+        if (clash) return say("Another team is already called " + v + ".", true);
+        this.disabled = true; say("");
+        var res = await sb.from("teams").update({name: v}).eq("id", t.id).select();
+        this.disabled = false;
+        if (res.error) return say(res.error.message, true);
+        if (!res.data || !res.data.length)
+          return say("That didn't save - only the commissioner can rename other teams.", true);
+        t.name = v; cmDirty = false;
+        say("Renamed to " + v + ".");
+      });
+      var wrap = document.createElement("div");
+      wrap.appendChild(inp); wrap.appendChild(tag);
+      row.appendChild(wrap); row.appendChild(btn);
+      host.appendChild(row);
+    });
+  }
+
+  /* ---- scoring --------------------------------------------------------- */
+  function scoreFieldId(k){ return "sc-" + k; }
+  function playedCount(){
+    var n = 0;
+    for (var w = 1; w <= totalWeeks(); w++) if (results[w]) n++;
+    return n;
+  }
+  function renderScoring(){
+    var host = el("cm-body");
+    host.innerHTML = "";
+    var cur = Pool.scoring();
+    el("cm-note").textContent =
+      "Every stat is priced here. Stat lines come from the league's seed and never move, "
+      + "so changing a price rescores what has already happened rather than rewriting it.";
+
+    SCORE_GROUPS.forEach(function(g){
+      var box = document.createElement("div");
+      box.className = "grp";
+      var h = document.createElement("h3"); h.textContent = g.title;
+      box.appendChild(h);
+      if (g.note){
+        var nt = document.createElement("p");
+        nt.className = "hint"; nt.style.margin = "-4px 0 8px";
+        nt.textContent = g.note;
+        box.appendChild(nt);
+      }
+      var flds = document.createElement("div");
+      flds.className = "scflds";
+      g.fields.forEach(function(f){
+        var d = document.createElement("div");
+        d.className = "fld";
+        var lab = document.createElement("label");
+        lab.setAttribute("for", scoreFieldId(f.key));
+        lab.textContent = f.label;
+        var inp = document.createElement("input");
+        inp.type = "number";
+        inp.id = scoreFieldId(f.key);
+        inp.min = f.min; inp.max = f.max; inp.step = f.step;
+        inp.value = cur[f.key];
+        inp.addEventListener("input", function(){ cmDirty = true; });
+        d.appendChild(lab); d.appendChild(inp);
+        if (f.hint){
+          var hint = document.createElement("span");
+          hint.className = "hint"; hint.textContent = f.hint;
+          d.appendChild(hint);
+        }
+        flds.appendChild(d);
+      });
+      box.appendChild(flds);
+      host.appendChild(box);
+    });
+
+    var played = playedCount();
+    if (played){
+      var warn = document.createElement("p");
+      warn.className = "cmwarn";
+      warn.textContent = played === 1
+        ? "One week has been played. Saving rescores it, so the standings will move."
+        : played + " weeks have been played. Saving rescores every one of them, so the "
+          + "standings will move.";
+      host.appendChild(warn);
+    }
+
+    var row = document.createElement("div");
+    row.className = "row"; row.style.marginTop = "16px";
+    var save = document.createElement("button");
+    save.type = "button"; save.className = "btn primary"; save.textContent = "Save scoring";
+    save.addEventListener("click", function(){ saveScoring(save); });
+    var std = document.createElement("button");
+    std.type = "button"; std.className = "btn"; std.textContent = "Back to standard";
+    std.addEventListener("click", function(){
+      var d = Pool.defaultScoring();
+      Object.keys(d).forEach(function(k){
+        var i = el(scoreFieldId(k)); if (i) i.value = d[k];
+      });
+      cmDirty = true;
+      say("Standard scoring filled in. Save to apply it.");
+    });
+    row.appendChild(save); row.appendChild(std);
+    host.appendChild(row);
+  }
+
+  function readScoring(){
+    var cur = Pool.scoring(), out = {};
+    SCORE_GROUPS.forEach(function(g){
+      g.fields.forEach(function(f){
+        var inp = el(scoreFieldId(f.key));
+        var v = fnum(inp && inp.value, cur[f.key]);
+        out[f.key] = Math.max(f.min, Math.min(f.max, v));
+      });
+    });
+    return out;
+  }
+
+  /* Rescore every week already played. The stored lineups are what was
+     actually started, so this is a repricing, not a replay - nobody's bench
+     suddenly starts. */
+  async function rescorePlayed(){
+    var weeks = [];
+    for (var w = 1; w <= totalWeeks(); w++) if (results[w]) weeks.push(w);
+    for (var i = 0; i < weeks.length; i++){
+      var wk = weeks[i], r = results[wk];
+      if (!r || !r.lines) continue;
+      var pts = {};
+      Object.keys(r.lines).forEach(function(t){ pts[t] = lineupPts(r.lines[t], wk); });
+      r.pts = pts;
+      var up = await sb.from("results").update({data: r})
+                       .eq("league_id", LG.id).eq("week", wk).select();
+      if (up.error) return {error: up.error.message, done: i};
+      if (!up.data || !up.data.length)
+        return {error: "The database refused the rescore - the results table has no update "
+                     + "policy for the commissioner yet.", done: i};
+    }
+    seeds = null;
+    if (results[cfg.weeks]) seeds = standings().slice(0, cfg.playoff).map(function(r){ return r.i; });
+    return {done: weeks.length};
+  }
+
+  async function saveScoring(btn){
+    var next = readScoring();
+    var before = playedCount();
+    btn.disabled = true; say("Saving...");
+    var settings = Object.assign({}, LG.settings || {}, {scoring: next});
+    settings.rev = (parseInt((LG.settings || {}).rev, 10) || 0) + 1;
+    var res = await sb.from("leagues").update({settings: settings}).eq("id", LG.id).select();
+    if (res.error){ btn.disabled = false; return say(res.error.message, true); }
+    if (!res.data || !res.data.length){
+      btn.disabled = false;
+      return say("That didn't save - only the commissioner can change scoring.", true);
+    }
+    applyLeague(res.data[0]);           /* this is what makes the new table active */
+    var out = before ? await rescorePlayed() : {done: 0};
+    btn.disabled = false; cmDirty = false;
+    if (out.error) return say("Scoring saved, but the rescore stopped after "
+                            + out.done + " week(s): " + out.error, true);
+    say(out.done ? "Scoring saved, and " + out.done + " week"
+                   + (out.done === 1 ? "" : "s") + " rescored."
+                 : "Scoring saved.");
+    renderScoring();
+  }
+
+  /* ---- the screen itself ----------------------------------------------- */
+  function renderCommish(){
+    if (!el("cm-body") || !el("cm-title")){ commish = null; return; }
+    var tool = commish === "hub" ? null : commish;
+    el("cm-title").textContent = tool ? (TOOL_TITLES[tool] || "Commissioner tools")
+                                      : "Commissioner tools";
+    el("cm-back").textContent = tool ? "All tools" : "Back to league";
+
+    /* A realtime event or the season poll must not wipe half-typed values. */
+    if (cmShown === commish && cmDirty) return;
+    cmShown = commish;
+
+    if (!tool)                  renderHub();
+    else if (tool === "rename") renderRename();
+    else if (tool === "teams")  renderTeamNames();
+    else if (tool === "scoring")renderScoring();
+    else if (tool === "rules"){
+      el("cm-body").innerHTML = "";
+      el("cm-note").textContent =
+        "The rules everyone drafts and plays by. Anything that would break a league "
+        + "already under way is locked, and says when it closed.";
+    }
+    else { commish = "hub"; renderHub(); }
+  }
+
+  /* =========================================================
      Which screen, and the lobby around it
      ========================================================= */
   function show(id, on){ var e = el(id); if (e) e.classList.toggle("hidden", !on); }
@@ -1509,8 +1933,8 @@
   function needsUsername(){ return !!me && !(profile && profile.username); }
 
   function hideAll(){
-    ["view-home","view-auth","view-newpass","view-username","view-new","view-join",
-      "view-league","view-settings"]
+    ["view-home","view-auth","view-newpass","view-username","view-commish",
+      "view-new","view-join","view-league","view-settings"]
       .forEach(function(k){ show(k, false); });
     ["setup","draft","season"].forEach(function(k){
       var e = el("screen-" + k); if (e) e.hidden = true;
@@ -1523,22 +1947,24 @@
     return m ? m[1] : null;
   }
   function goHome(){
-    selectedId = null; healed = false;
+    selectedId = null; healed = false; commish = null; cmDirty = false; cmShown = null;
     if (location.hash) history.pushState(null, "", location.pathname + location.search);
     clearInterval(ticker); clearTimeout(cpuTimer); seasonWatch(false);
     screen = "home"; LG = null;
     say(""); route();
   }
   function openLeague(id){
-    selectedId = id; healed = false;
+    selectedId = id; healed = false; commish = null; cmDirty = false; cmShown = null;
     history.pushState(null, "", location.pathname + location.search + "#l=" + id);
     say("");
     (async function(){ await loadAll(); if (LG) watch(); route(); })();
   }
   window.addEventListener("popstate", function(){
-    var h = hashLeague();
+    var h = hashLeague(), c = hashCommish();
+    commish = c; cmDirty = false; cmShown = null;
     if (h && h !== selectedId){ selectedId = h; loadAll().then(function(){ if (LG) watch(); route(); }); }
     else if (!h){ goHome(); }
+    else route();
   });
 
   function route(){
@@ -1558,6 +1984,7 @@
 
     /* Home only. The Create account / Sign in buttons swap to the form -
        showing both at once was just the same choice twice. */
+    show("commishbtn", false);
     if (!signedIn){
       show("homebtn", false);
       /* A spent or expired reset link. Put them on the box that fixes it rather
@@ -1585,10 +2012,29 @@
       return;
     }
 
+    /* The commissioner tools take over the whole page. The season poll is
+       parked while they are open, because a redraw mid-edit loses whatever
+       was being typed. */
+    if (commish && amCommish()){
+      clearInterval(ticker); clearTimeout(cpuTimer); seasonWatch(false);
+      show("view-commish", true);
+      show("commishbtn", false);
+      var csub = el("sub"); if (csub) csub.textContent = "Commissioner";
+      if (commish === "rules"){ show("view-settings", true); renderSettings(); }
+      renderCommish();
+      return;
+    }
+    if (commish && !amCommish()) commish = null;
+
     var phase = LG.phase;
     var lobby = phase === "setup";
+    show("commishbtn", amCommish());
     seasonWatch(phase === "season" || phase === "done");
     show("view-league",   lobby);
+    /* The settings also live in the commissioner tools, reachable from every
+       phase. They stay on the lobby too: while you are waiting on friends,
+       tweaking the rules is the whole activity, and burying it behind a
+       button would be a step backwards. */
     show("view-settings", lobby);
     if (lobby){
       el("league-name").textContent = LG.name;
@@ -1720,12 +2166,13 @@
     if (seasonPoll) return;
     seasonPoll = setInterval(async function(){
       if (!LG || !selectedId) return;
-      var lr = await sb.from("leagues").select("phase, current_week").eq("id", LG.id).limit(1);
+      var lr = await sb.from("leagues").select("phase, current_week, settings->>rev")
+                       .eq("id", LG.id).limit(1);
       var rr = await sb.from("results").select("week").eq("league_id", LG.id);
       if (lr.error || rr.error) return;
       var l = lr.data && lr.data[0];
       if (!l) return;
-      var sig = l.phase + ":" + l.current_week + ":" +
+      var sig = l.phase + ":" + l.current_week + ":" + (l.rev || 0) + ":" +
                 (rr.data || []).map(function(r){ return r.week; }).sort(function(a,b){return a-b;}).join(",");
       if (sig === lastSeen) return;
       lastSeen = sig;
@@ -1796,6 +2243,7 @@
     await loadLeagues();
     selectedId = hashLeague();
     if (selectedId && !LEAGUES.some(function(l){ return l.id === selectedId; })) selectedId = null;
+    commish = selectedId ? hashCommish() : null;
 
     /* Measure this browser's clock against the server's once, so the draft
        countdown is the same everywhere. */
@@ -2018,17 +2466,31 @@
     });
     el("gohome").addEventListener("click", goHome);
     el("homebtn").addEventListener("click", goHome);
+    /* Guarded, because app.js and index.html deploy as two separate commits:
+       for the minute between them the new script runs against the old markup,
+       and an addEventListener on null would take the whole page down. */
+    if (el("commishbtn"))
+      el("commishbtn").addEventListener("click", function(){ openCommish("hub"); });
+    if (el("cm-back"))
+      el("cm-back").addEventListener("click", function(){
+        if (commish && commish !== "hub") openCommish("hub"); else closeCommish();
+      });
     el("startdraft").addEventListener("click", function(){ startDraft(); });
     el("revert-settings").addEventListener("click", function(){ dirty = false; renderSettings(); say(""); });
     el("save-settings").addEventListener("click", async function(){
       var next = readForm();
+      /* Merge rather than replace. settings also carries the draft seed, the
+         player-pool version and the scoring table; a wholesale write would
+         throw all of them away. */
+      var merged = Object.assign({}, LG.settings || {}, next);
+      merged.rev = (parseInt((LG.settings || {}).rev, 10) || 0) + 1;
       this.disabled = true; say("");
-      var res = await sb.from("leagues").update({settings: next}).eq("id", LG.id).select();
+      var res = await sb.from("leagues").update({settings: merged}).eq("id", LG.id).select();
       this.disabled = false;
       if (res.error) return say(res.error.message, true);
       if (!res.data || !res.data.length)
         return say("That didn't save - only the commissioner can change league settings.", true);
-      applyLeague(res.data[0]); dirty = false; renderSettings(); renderLobby(); flashSaved();
+      applyLeague(res.data[0]); dirty = false; renderSettings(); flashSaved();
     });
   }
 
