@@ -506,7 +506,8 @@
   /* The lobby keeps a narrow measure. The draft board and the season screens
      need the full width, so .wrap stays wide and the lobby cards are the ones
      that are constrained. */
-  #view-home, #view-auth, #view-username, #view-newpass, #view-new, #view-join, #view-league, #view-settings{
+  #view-home, #view-auth, #view-newpass, #view-username, #view-commish,
+  #view-new, #view-join, #view-league, #view-settings{
     max-width:720px; margin:0 auto 16px; padding:18px 18px 20px;
   }
   .hero h2{ font-family:var(--display); font-size:22px; letter-spacing:.04em;
@@ -568,6 +569,36 @@
     background:none; border:none; padding:0; cursor:pointer; color:var(--accent);
     font:inherit; font-size:11.5px; text-decoration:underline;
   }
+  /* ---- commissioner tools ---- */
+  .cmhead{ display:flex; align-items:center; gap:12px; margin:0 0 6px; }
+  .cmhead h2{ margin:0 !important; flex:1 1 auto; }
+  .cmsec{ margin-top:20px; }
+  .cmsec:first-child{ margin-top:8px; }
+  .cmsec h3{ font-family:var(--display); font-size:11px; letter-spacing:.14em;
+             text-transform:uppercase; color:var(--ink-2); font-weight:600;
+             margin:0 0 10px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+  .cmrow{ display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+          background:var(--surface-2); border:1px solid var(--line); border-radius:var(--r);
+          padding:12px 14px; margin-bottom:8px; cursor:pointer; font:inherit; color:inherit; }
+  .cmrow:hover{ border-color:var(--accent); background:var(--accent-soft); }
+  .cmrow .cmmain{ flex:1 1 auto; min-width:0; }
+  .cmrow .cmname{ display:block; font-size:14.5px; font-weight:600; }
+  .cmrow .cmblurb{ display:block; font-size:12.5px; color:var(--ink-2); margin-top:2px;
+                   line-height:1.4; }
+  .cmrow .go{ flex:0 0 auto; font-family:var(--mono); font-size:15px; color:var(--ink-2); }
+  /* A locked field with no explanation is how a commissioner decides the site
+     is broken. Always say which phase closed it, and why. */
+  .lockwhy{ display:block; font-size:10.5px; color:var(--gold); margin-top:3px;
+            line-height:1.35; }
+  .fld input:disabled{ opacity:.6; }
+  .scflds{ display:grid; grid-template-columns:repeat(auto-fill,minmax(148px,1fr)); gap:11px; }
+  .cmwarn{ font-size:12.5px; color:var(--gold); background:var(--gold-soft);
+           border:1px solid var(--gold-line); border-radius:var(--r);
+           padding:9px 11px; margin:14px 0 0; line-height:1.45; }
+  .cmteam{ display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center;
+           margin-bottom:8px; }
+  .cmteam input{ margin-bottom:0; }
+  .cmtag{ font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-2); }
   #startwrap{ margin-top:16px; padding-top:14px; border-top:1px solid var(--line); }
   .hidden{ display:none !important; }
   header.masthead .who{ font-size:12.5px; color:var(--ink-2); margin-left:auto; }
@@ -582,6 +613,7 @@
     </button>
     <span class="sub" id="sub">League</span>
     <span class="who" id="who"></span>
+    <button class="btn hidden" id="commishbtn" type="button">Commissioner</button>
     <button class="btn hidden" id="homebtn" type="button">Home</button>
     <button class="btn hidden" id="signout" type="button">Sign out</button>
   </header>
@@ -700,6 +732,16 @@
       <button class="btn primary" id="startdraft" type="button">Start draft</button>
       <p class="note" style="margin-top:8px">Once the draft starts the settings lock and nobody else can join.</p>
     </div>
+  </section>
+
+  <!-- ---------- commissioner ---------- -->
+  <section class="card hidden" id="view-commish">
+    <div class="cmhead">
+      <h2 id="cm-title">Commissioner tools</h2>
+      <button class="btn" id="cm-back" type="button">Back</button>
+    </div>
+    <p class="note" id="cm-note"></p>
+    <div id="cm-body"></div>
   </section>
 
   <section class="card hidden" id="view-settings">
